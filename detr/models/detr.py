@@ -1,15 +1,12 @@
+import torch
 from jaxtyping import Float, Shaped
-from tensordict import tensorclass
 from torch import Tensor, nn
+from torchvision.ops.boxes import box_convert
+
+from detr.data import DetrOutputs
 
 from .misc import MLP
 from .transformer import TransformerDecoder
-
-
-@tensorclass
-class PredictedBoundingBox:
-    bbox: Tensor
-    class_logits: Tensor
 
 
 class DETR(nn.Module):
@@ -31,8 +28,8 @@ class DETR(nn.Module):
         self.bbox_embed = MLP(embedding_dim, embedding_dim, 4, 3, sigmoid_output=True)
         self.query_embed = nn.Embedding(num_queries, embedding_dim)
 
-    def forward(self, input: Float[Tensor, " b 3 h w"]) -> Shaped[PredictedBoundingBox, " b num_queries"]:
-        b = input.shape[0]
+    def forward(self, input: Float[Tensor, " b 3 h w"]) -> Shaped[DetrOutputs, " b num_queries"]:
+        b, _, h, w = input.shape
         img_tokens, pos_tokens = self.backbone(input)
 
         query = self.query_embed.weight[None, ...].expand(b, -1, -1)
@@ -41,10 +38,13 @@ class DETR(nn.Module):
 
         processed_queries = processed_queries[-1]
         outputs_class = self.class_embed(processed_queries)
-        outputs_coord = self.bbox_embed(processed_queries)
-        predicted_bboxes = PredictedBoundingBox(
-            bbox=outputs_coord,  # pyright: ignore
-            class_logits=outputs_class,  # pyright: ignore
-            batch_size=outputs_coord.shape[:-1],  # pyright: ignore
+        outputs_bbox = self.bbox_embed(processed_queries)  # cxcywh format and normalized by image size
+        scale = torch.tensor([w, h, w, h], device=input.device, dtype=input.dtype)
+        outputs_bbox = box_convert(outputs_bbox, "cxcywh", "xyxy") * scale
+
+        predicted_bboxes = DetrOutputs(
+            bboxes=outputs_bbox,  # pyright: ignore[reportCallIssue]
+            class_outputs=outputs_class,  # pyright: ignore[reportCallIssue]
+            batch_size=outputs_bbox.shape[:-1],  # pyright: ignore[reportCallIssue]
         )
         return predicted_bboxes
