@@ -3,7 +3,8 @@ from jaxtyping import Float, Shaped
 from torch import Tensor, nn
 from torchvision.ops.boxes import box_convert
 
-from detr.data import DetrOutputs
+from detr.data.bboxes import DetrOutputs
+from detr.data.transforms import resize_bboxes
 
 from .misc import MLP
 from .transformer import TransformerDecoder
@@ -39,12 +40,14 @@ class DETR(nn.Module):
         processed_queries = processed_queries[-1]
         outputs_class = self.class_embed(processed_queries)
         outputs_bbox = self.bbox_embed(processed_queries)  # cxcywh format and normalized by image size
-        scale = torch.tensor([w, h, w, h], device=input.device, dtype=input.dtype)
-        outputs_bbox = box_convert(outputs_bbox, "cxcywh", "xyxy") * scale
+        outputs_bbox = box_convert(outputs_bbox, "cxcywh", "xyxy")
 
+        batch_size = outputs_bbox.shape[:-1]
         predicted_bboxes = DetrOutputs(
             bboxes=outputs_bbox,  # pyright: ignore[reportCallIssue]
+            canvas_size=torch.ones((*batch_size, 2), device=outputs_bbox.device, dtype=outputs_bbox.dtype),  # pyright: ignore[reportCallIssue]
             class_outputs=outputs_class,  # pyright: ignore[reportCallIssue]
             batch_size=outputs_bbox.shape[:-1],  # pyright: ignore[reportCallIssue]
         )
-        return predicted_bboxes
+        scaled_bboxes: DetrOutputs = resize_bboxes(predicted_bboxes, (h, w))  # pyright: ignore
+        return scaled_bboxes
