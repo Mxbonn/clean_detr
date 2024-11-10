@@ -45,9 +45,14 @@ class HungarianMatcher(nn.Module):
         bs, num_queries = outputs.batch_size  # pyright: ignore
 
         # targets cannot be stacked, because they may have different number of targets
-        # so we cat them instead
-        cat_targets: GTBoundingBoxes = torch.cat(targets)  # pyright: ignore
-
+        # so we cat them instead, cant use torch.cat as batchsize is at the image level, not bbox level
+        # assert all canvas_sizes are the same
+        assert all(torch.all(targets[0].canvas_size == t.canvas_size) for t in targets)
+        cat_targets = GTBoundingBoxes(
+            bboxes=torch.cat([t.bboxes for t in targets]),  # pyright: ignore
+            canvas_size=targets[0].canvas_size,  # pyright: ignore
+            class_labels=torch.cat([t.class_labels for t in targets]),  # pyright: ignore
+        )
         # We flatten the outputs to compute the cost matrices in a batch
         # Compute the classification cost. Contrary to the loss, we don't use the NLL,
         # but approximate it in 1 - proba[target class].

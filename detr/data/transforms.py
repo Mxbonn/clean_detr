@@ -49,6 +49,7 @@ def sanitize_bboxes(bboxes: BoundingBoxes, min_size: int = 1, min_area: int = 1)
     def fn(x):
         if x.shape[: ndim - 1] == desired_shape:
             return x[valid]
+        return x
 
     bboxes = bboxes.apply(fn)  # pyright: ignore
     return bboxes

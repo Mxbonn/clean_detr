@@ -2,6 +2,8 @@ from typing import Literal
 
 import torch
 import torchvision
+from jaxtyping import Float, Shaped
+from torch import Tensor
 from torchvision.ops.boxes import box_convert
 from torchvision.transforms.v2 import Compose, Normalize, RandomChoice
 from torchvision.transforms.v2.functional import pil_to_tensor, to_dtype
@@ -22,11 +24,35 @@ class CocoDetection(torchvision.datasets.CocoDetection):
         bboxes = torch.tensor([ann["bbox"] for ann in target], dtype=torch.float32).reshape(-1, 4)
         bboxes = box_convert(bboxes, "xywh", "xyxy")
         size = torch.tensor(img.shape[-2:])
-
         bboxes = GTBoundingBoxes(bboxes=bboxes, canvas_size=size, class_labels=labels)  # pyright: ignore
         if self._transforms is not None:
             img, bboxes = self._transforms(img, bboxes)
         return img, bboxes
+
+
+def collate_fn(
+    batch: list[tuple[Float[Tensor, " 3 h w"], Shaped[GTBoundingBoxes, " n"]]],
+) -> tuple[Float[Tensor, " b 3 h w"], list[Shaped[GTBoundingBoxes, " n"]]]:
+    images, bboxes = zip(*batch)
+    # Get max dimensions
+    max_height = max(img.shape[-2] for img in images)
+    max_width = max(img.shape[-1] for img in images)
+    # Pad and stack images
+    padded_images = [
+        torch.nn.functional.pad(img, (0, max_width - img.shape[-1], 0, max_height - img.shape[-2])) for img in images
+    ]
+
+    # Stack into batches
+    image_batch = torch.stack(padded_images, dim=0)
+
+    # change canvas size of bboxes
+    batch_bboxes = []
+    for bb in bboxes:
+        bb = bb.copy()  # pyright: ignore
+        bb.canvas_size = torch.tensor([max_height, max_width], device=bb.canvas_size.device, dtype=bb.canvas_size.dtype)
+        batch_bboxes.append(bb)
+
+    return image_batch, batch_bboxes
 
 
 def make_coco_transforms(stage: Literal["train", "val"]):
