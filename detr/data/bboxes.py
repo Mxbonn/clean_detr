@@ -9,7 +9,6 @@ class BoundingBoxes:
     bboxes: Float[  #
         Tensor, " *b n 4"  # assuming the format is XYXY
     ]  # Not use torchvision.tv_tensors.BoundingBoxes as it cannot have batch dimension and does not generalize to e.g. keypoints
-    canvas_size: Int[Tensor, " *b 2"]  # (height, width) of the corresponding image, handy for resizing
 
     @property
     def bboxes_cxcywh(self) -> Float[Tensor, " *b n 4"]:

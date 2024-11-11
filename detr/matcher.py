@@ -7,7 +7,6 @@ from torch import Tensor
 from torchvision.ops.boxes import generalized_box_iou
 
 from detr.data.bboxes import DetrOutputs, GTBoundingBoxes
-from detr.data.transforms import resize_bboxes
 
 
 class HungarianMatcher(nn.Module):
@@ -44,15 +43,11 @@ class HungarianMatcher(nn.Module):
         """
         bs, num_queries = outputs.batch_size  # pyright: ignore
 
+        # flatten the outputs
+        outputs = outputs.flatten(0, 1)  # pyright: ignore
         # targets cannot be stacked, because they may have different number of targets
-        # so we cat them instead, cant use torch.cat as batchsize is at the image level, not bbox level
-        # assert all canvas_sizes are the same
-        assert all(torch.all(targets[0].canvas_size == t.canvas_size) for t in targets)
-        cat_targets = GTBoundingBoxes(
-            bboxes=torch.cat([t.bboxes for t in targets]),  # pyright: ignore
-            canvas_size=targets[0].canvas_size,  # pyright: ignore
-            class_labels=torch.cat([t.class_labels for t in targets]),  # pyright: ignore
-        )
+        # so we cat them instead
+        cat_targets: GTBoundingBoxes = torch.cat(targets)  # pyright: ignore
         # We flatten the outputs to compute the cost matrices in a batch
         # Compute the classification cost. Contrary to the loss, we don't use the NLL,
         # but approximate it in 1 - proba[target class].
@@ -60,12 +55,10 @@ class HungarianMatcher(nn.Module):
         cost_class = -outputs.class_probs.flatten(0, 1)[..., cat_targets.class_labels]
 
         # Compute the L1 cost between boxes
-        normalized_outputs = resize_bboxes(outputs, (1, 1))
-        normalized_targets = resize_bboxes(cat_targets, (1, 1))
-        cost_bbox = torch.cdist(normalized_outputs.bboxes_cxcywh.flatten(0, 1), normalized_targets.bboxes_cxcywh, p=1)
+        cost_bbox = torch.cdist(outputs.bboxes_cxcywh, cat_targets.bboxes_cxcywh, p=1)
 
         # Compute the giou cost between boxes
-        cost_giou = -generalized_box_iou(outputs.bboxes.flatten(0, 1), cat_targets.bboxes)
+        cost_giou = -generalized_box_iou(outputs.bboxes, cat_targets.bboxes)
 
         # Final cost matrix
         C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou

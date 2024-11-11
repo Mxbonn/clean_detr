@@ -13,15 +13,16 @@ from detr.data.bboxes import BoundingBoxes
 B = TypeVar("B", bound=BoundingBoxes)
 
 
-def resize_bboxes(bboxes: Shaped[B, " *b"], size: tuple[int, int]) -> Shaped[B, " *b"]:
-    current_size = bboxes.canvas_size
-    new_size = torch.tensor(size, device=current_size.device).expand_as(current_size)
+def resize_bboxes(
+    bboxes: Shaped[B, " *b"], current_size: tuple[int, int], target_size: tuple[int, int]
+) -> Shaped[B, " *b"]:
+    current_size = torch.tensor(current_size, device=bboxes.device)  # pyright: ignore
+    new_size = torch.tensor(target_size, device=bboxes.device)  # pyright: ignore
     new_bboxes = bboxes.copy()  # pyright: ignore
     scale_factors = new_size / current_size  # shape: (n, 2)
     # Convert from [h, w] to [w, h, w, h] for each bbox
     scale_factors = torch.cat([scale_factors.flip(-1), scale_factors.flip(-1)], dim=-1)
     new_bboxes.bboxes = bboxes.bboxes * scale_factors
-    new_bboxes.canvas_size = new_size
     return new_bboxes
 
 
@@ -32,30 +33,18 @@ def crop_bboxes(bboxes: B, top: int, left: int, height: int, width: int) -> B:
     )
     bboxes.bboxes[..., 0::2].clamp_(min=0, max=width)
     bboxes.bboxes[..., 1::2].clamp_(min=0, max=height)
-    bboxes.canvas_size = torch.as_tensor(
-        [height, width], device=bboxes.canvas_size.device, dtype=bboxes.canvas_size.dtype
-    )
     return bboxes
 
 
 def sanitize_bboxes(bboxes: B, min_size: int = 1, min_area: int = 1) -> B:
-    h, w = bboxes.canvas_size
     ws, hs = bboxes.bboxes[..., 2] - bboxes.bboxes[..., 0], bboxes.bboxes[..., 3] - bboxes.bboxes[..., 1]
     valid = (ws >= min_size) & (hs >= min_size) & (bboxes.bboxes >= 0).all(dim=-1) & (ws * hs >= min_area)
-    bboxes = bboxes.copy()  # pyright: ignore
-    ndim = bboxes.bboxes.ndim
-    desired_shape = bboxes.bboxes.shape[: ndim - 1]
-
     # apply the mask to the bboxes but also to other fields such as labels
     # cant apply to everything because the common dimension is only on image level
     # e.g. canvas_size is not repeated per bounding box but per image
-    def fn(x):
-        if x.shape[: ndim - 1] == desired_shape:
-            return x[valid]
-        return x
 
-    bboxes = bboxes.apply(fn)  # pyright: ignore
-    return bboxes
+    sanitized_bboxes = bboxes[valid]  # pyright: ignore
+    return sanitized_bboxes
 
 
 class ImageWithBoundingBoxesTransform(nn.Module):
@@ -114,9 +103,10 @@ class Resize(ImageWithBoundingBoxesTransform):
     def forward(
         self, image: Float[Tensor, " 3 h w"], targets: Shaped[B, ""]
     ) -> tuple[Float[Tensor, " 3 h w"], Shaped[B, ""]]:
+        current_size = (image.shape[-2], image.shape[-1])
         new_image = resize(image, self.size, self.interpolation, self.max_size, self.antialias)
-        new_h, new_w = new_image.shape[-2:]
-        new_targets = resize_bboxes(targets, (new_h, new_w))
+        target_size = (new_image.shape[-2], new_image.shape[-1])
+        new_targets = resize_bboxes(targets, current_size, target_size)
         return new_image, new_targets
 
 
@@ -141,10 +131,11 @@ class RandomResizedCrop(ImageWithBoundingBoxesTransform):
     def forward(
         self, image: Float[Tensor, " 3 h w"], targets: Shaped[B, ""]
     ) -> tuple[Float[Tensor, " 3 h w"], Shaped[B, ""]]:
+        current_size = (image.shape[-2], image.shape[-1])
         top, left, height, width = _RandomResizedCrop.get_params(image, scale=self.scale, ratio=self.ratio)  # pyright: ignore
         new_image = resized_crop(image, top, left, height, width, list(self.size), self.interpolation, self.antialias)
         new_targets = crop_bboxes(targets, top, left, height, width)
-        new_targets = resize_bboxes(new_targets, self.size)
+        new_targets = resize_bboxes(new_targets, current_size, self.size)
         return new_image, new_targets
 
 
@@ -163,3 +154,12 @@ class SanitizeBoundingBoxes(ImageWithBoundingBoxesTransform):
         self, image: Float[Tensor, " 3 h w"], targets: Shaped[B, ""]
     ) -> tuple[Float[Tensor, " 3 h w"], Shaped[B, ""]]:
         return image, sanitize_bboxes(targets, self.min_size, self.min_area)
+
+
+class NormalizeBoundingBoxes(ImageWithBoundingBoxesTransform):
+    def forward(
+        self, image: Float[Tensor, " 3 h w"], targets: Shaped[B, ""]
+    ) -> tuple[Float[Tensor, " 3 h w"], Shaped[B, ""]]:
+        current_size = (image.shape[-2], image.shape[-1])
+        new_targets = resize_bboxes(targets, current_size, (1, 1))
+        return image, new_targets
