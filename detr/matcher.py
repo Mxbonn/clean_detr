@@ -81,3 +81,10 @@ def get_src_indices(indices: list[Int[Tensor, " n"]]) -> tuple[Int[Tensor, " n"]
     dim_0_indices = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
     dim_1_indices = torch.cat([src for (src, _) in indices])
     return dim_0_indices, dim_1_indices
+
+
+def get_target_indices(indices: list[Int[Tensor, " n"]]) -> tuple[Int[Tensor, " n"], Int[Tensor, " n"]]:
+    # permute targets following indices
+    dim_0_indices = torch.cat([torch.full_like(tgt, i) for i, (_, tgt) in enumerate(indices)])
+    dim_1_indices = torch.cat([tgt for (_, tgt) in indices])
+    return dim_0_indices, dim_1_indices

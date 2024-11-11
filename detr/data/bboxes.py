@@ -35,3 +35,7 @@ class DetrOutputs(PredictedBoundingBoxes):
     @property
     def class_probs(self) -> Float[Tensor, " *b n c"]:
         return self.class_outputs.softmax(dim=-1)
+
+    @property
+    def class_logits(self) -> Float[Tensor, " *b n c"]:
+        return self.class_outputs

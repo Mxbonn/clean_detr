@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import TypeVar
 
 import torch
 from jaxtyping import Float, Shaped
@@ -9,8 +10,10 @@ from torchvision.transforms.v2.functional import resize, resized_crop
 
 from detr.data.bboxes import BoundingBoxes
 
+B = TypeVar("B", bound=BoundingBoxes)
 
-def resize_bboxes(bboxes: Shaped[BoundingBoxes, " *b"], size: tuple[int, int]) -> Shaped[BoundingBoxes, " *b"]:
+
+def resize_bboxes(bboxes: Shaped[B, " *b"], size: tuple[int, int]) -> Shaped[B, " *b"]:
     current_size = bboxes.canvas_size
     new_size = torch.tensor(size, device=current_size.device).expand_as(current_size)
     new_bboxes = bboxes.copy()  # pyright: ignore
@@ -22,7 +25,7 @@ def resize_bboxes(bboxes: Shaped[BoundingBoxes, " *b"], size: tuple[int, int]) -
     return new_bboxes
 
 
-def crop_bboxes(bboxes: BoundingBoxes, top: int, left: int, height: int, width: int) -> BoundingBoxes:
+def crop_bboxes(bboxes: B, top: int, left: int, height: int, width: int) -> B:
     bboxes = bboxes.copy()  # pyright: ignore
     bboxes.bboxes = bboxes.bboxes - torch.as_tensor(
         [left, top, left, top], device=bboxes.bboxes.device, dtype=bboxes.bboxes.dtype
@@ -35,7 +38,7 @@ def crop_bboxes(bboxes: BoundingBoxes, top: int, left: int, height: int, width: 
     return bboxes
 
 
-def sanitize_bboxes(bboxes: BoundingBoxes, min_size: int = 1, min_area: int = 1) -> BoundingBoxes:
+def sanitize_bboxes(bboxes: B, min_size: int = 1, min_area: int = 1) -> B:
     h, w = bboxes.canvas_size
     ws, hs = bboxes.bboxes[..., 2] - bboxes.bboxes[..., 0], bboxes.bboxes[..., 3] - bboxes.bboxes[..., 1]
     valid = (ws >= min_size) & (hs >= min_size) & (bboxes.bboxes >= 0).all(dim=-1) & (ws * hs >= min_area)
@@ -57,8 +60,8 @@ def sanitize_bboxes(bboxes: BoundingBoxes, min_size: int = 1, min_area: int = 1)
 
 class ImageWithBoundingBoxesTransform(nn.Module):
     def forward(
-        self, image: Float[Tensor, " 3 h w"], targets: Shaped[BoundingBoxes, ""]
-    ) -> tuple[Float[Tensor, " 3 h w"], Shaped[BoundingBoxes, ""]]:
+        self, image: Float[Tensor, " 3 h w"], targets: Shaped[B, ""]
+    ) -> tuple[Float[Tensor, " 3 h w"], Shaped[B, ""]]:
         raise NotImplementedError()
 
 
@@ -68,13 +71,13 @@ class RandomHorizontalFlip(ImageWithBoundingBoxesTransform):
         self.p = p
 
     def forward(
-        self, image: Float[Tensor, " 3 h w"], targets: Shaped[BoundingBoxes, ""]
-    ) -> tuple[Float[Tensor, " 3 h w"], Shaped[BoundingBoxes, ""]]:
+        self, image: Float[Tensor, " 3 h w"], targets: Shaped[B, ""]
+    ) -> tuple[Float[Tensor, " 3 h w"], Shaped[B, ""]]:
         if torch.rand(1) >= self.p:
             return image, targets
         w = image.shape[-1]
         image = image.flip(-1)
-        flipped_centers: BoundingBoxes = targets.copy()  # pyright: ignore[reportAttributeAccessIssue]
+        flipped_centers: B = targets.copy()  # pyright: ignore[reportAttributeAccessIssue]
         flipped_centers.bboxes = flipped_centers.bboxes[:, [2, 1, 0, 3]] * torch.as_tensor(
             [-1, 1, -1, 1]
         ) + torch.as_tensor([w, 0, w, 0])
@@ -109,8 +112,8 @@ class Resize(ImageWithBoundingBoxesTransform):
         self.antialias = antialias
 
     def forward(
-        self, image: Float[Tensor, " 3 h w"], targets: Shaped[BoundingBoxes, ""]
-    ) -> tuple[Float[Tensor, " 3 h w"], Shaped[BoundingBoxes, ""]]:
+        self, image: Float[Tensor, " 3 h w"], targets: Shaped[B, ""]
+    ) -> tuple[Float[Tensor, " 3 h w"], Shaped[B, ""]]:
         new_image = resize(image, self.size, self.interpolation, self.max_size, self.antialias)
         new_h, new_w = new_image.shape[-2:]
         new_targets = resize_bboxes(targets, (new_h, new_w))
@@ -136,8 +139,8 @@ class RandomResizedCrop(ImageWithBoundingBoxesTransform):
         self.antialias = antialias
 
     def forward(
-        self, image: Float[Tensor, " 3 h w"], targets: Shaped[BoundingBoxes, ""]
-    ) -> tuple[Float[Tensor, " 3 h w"], Shaped[BoundingBoxes, ""]]:
+        self, image: Float[Tensor, " 3 h w"], targets: Shaped[B, ""]
+    ) -> tuple[Float[Tensor, " 3 h w"], Shaped[B, ""]]:
         top, left, height, width = _RandomResizedCrop.get_params(image, scale=self.scale, ratio=self.ratio)  # pyright: ignore
         new_image = resized_crop(image, top, left, height, width, list(self.size), self.interpolation, self.antialias)
         new_targets = crop_bboxes(targets, top, left, height, width)
@@ -157,6 +160,6 @@ class SanitizeBoundingBoxes(ImageWithBoundingBoxesTransform):
         self.min_area = min_area
 
     def forward(
-        self, image: Float[Tensor, " 3 h w"], targets: Shaped[BoundingBoxes, ""]
-    ) -> tuple[Float[Tensor, " 3 h w"], Shaped[BoundingBoxes, ""]]:
+        self, image: Float[Tensor, " 3 h w"], targets: Shaped[B, ""]
+    ) -> tuple[Float[Tensor, " 3 h w"], Shaped[B, ""]]:
         return image, sanitize_bboxes(targets, self.min_size, self.min_area)
