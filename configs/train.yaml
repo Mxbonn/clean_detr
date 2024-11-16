@@ -1,0 +1,58 @@
+semantic_version: 0.0.1
+
+device: cuda
+lr: 1e-4
+lr_backbone: 1e-5
+weight_decay: 1e-4
+epochs: 10 
+batch_size: 4
+gradient_accumulation_steps: 16 # effective batch size = 64
+num_workers: 4
+clip_max_norm: 0.1
+compile_model: False
+
+model:
+  _target_: detr.models.zoo.detr_resnet50
+  pretrained: True
+
+loss:
+  _target_: detr.loss.DetrLoss
+  matcher:
+    _target_: detr.matcher.HungarianMatcher
+    cost_class: 1.
+    cost_bbox: 5.
+    cost_giou: 2.
+  num_classes: 91
+  weight_class: 1.
+  weight_bbox: 5.
+  weight_giou: 2.
+  no_object_weight: 0.1
+
+
+lr_scheduler:
+  warmup_steps: 1000
+
+
+data:
+  datasets:
+    train:
+      _target_: detr.data.datasets.CocoDetection
+      root: /project_ghent/data/coco/train2017
+      ann_file: /project_ghent/data/coco/annotations/instances_train2017.json
+      transforms:
+        _target_: detr.data.datasets.make_coco_transforms
+        stage: train
+    validation:
+      _target_: detr.data.datasets.CocoDetection
+      root: /project_ghent/data/coco/val2017
+      ann_file: /project_ghent/data/coco/annotations/instances_val2017.json
+      transforms:
+        _target_: detr.data.datasets.make_coco_transforms
+        stage: val
+  train_collate: detr.data.datasets.collate_fn
+  validation_collate: detr.data.datasets.collate_fn
+
+wandb:
+  project: detr
+  entity: maxim-bonnaerens
+  log_interval: 10

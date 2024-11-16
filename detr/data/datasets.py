@@ -20,8 +20,8 @@ from .transforms import (
 
 
 class CocoDetection(torchvision.datasets.CocoDetection):
-    def __init__(self, root: str, annFile: str, transforms=None) -> None:
-        super().__init__(root, annFile)
+    def __init__(self, root: str, ann_file: str, transforms=None) -> None:
+        super().__init__(root, ann_file)
         self._transforms = transforms
 
     def __getitem__(self, index: int):

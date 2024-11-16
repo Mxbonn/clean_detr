@@ -5,13 +5,13 @@ from datetime import datetime
 
 import hydra
 import torch
-import wandb
 from hydra.utils import get_method, instantiate
 from omegaconf import OmegaConf
 from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler, SequentialSampler
 from torchmetrics.aggregation import MeanMetric
 from tqdm import tqdm
 
+import wandb
 from detr.lr_scheduler import get_cosine_schedule_with_warmup
 
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +25,8 @@ def main(cfg):
     model = instantiate(cfg.model)
     model = model.to(device)
     uncompiled_model = model  # needed for saving the model
-    model = torch.compile(model)
+    if cfg.compile_model:
+        model = torch.compile(model)
 
     loss = instantiate(cfg.loss)
 
