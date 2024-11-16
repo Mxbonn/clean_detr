@@ -32,7 +32,7 @@ class HungarianMatcher(nn.Module):
         assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, "all costs cant be 0"
 
     @torch.no_grad()
-    def forward(self, outputs: Shaped[DetrOutputs, " *b num_queries"], targets: list[Shaped[GTBoundingBoxes, " n"]]):
+    def forward(self, outputs: Shaped[DetrOutputs, " *b num_queries"], targets: list[GTBoundingBoxes]):
         """Performs the matching
         Returns:
             A list of size batch_size, containing tuples of (index_i, index_j) where:
@@ -69,14 +69,14 @@ class HungarianMatcher(nn.Module):
         return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
 
 
-def get_src_indices(indices: list[Int[Tensor, " n"]]) -> tuple[Int[Tensor, " n"], Int[Tensor, " n"]]:
+def get_src_indices(indices: list[tuple[Tensor, Tensor]]) -> tuple[Int[Tensor, " n"], Int[Tensor, " n"]]:
     # permute predictions following indices
     dim_0_indices = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
     dim_1_indices = torch.cat([src for (src, _) in indices])
     return dim_0_indices, dim_1_indices
 
 
-def get_target_indices(indices: list[Int[Tensor, " n"]]) -> tuple[Int[Tensor, " n"], Int[Tensor, " n"]]:
+def get_target_indices(indices: list[tuple[Tensor, Tensor]]) -> tuple[Int[Tensor, " n"], Int[Tensor, " n"]]:
     # permute targets following indices
     dim_0_indices = torch.cat([torch.full_like(tgt, i) for i, (_, tgt) in enumerate(indices)])
     dim_1_indices = torch.cat([tgt for (_, tgt) in indices])

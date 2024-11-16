@@ -27,7 +27,7 @@ class DETR(nn.Module):
         self.bbox_embed = MLP(embedding_dim, embedding_dim, 4, 3, sigmoid_output=True)
         self.query_embed = nn.Embedding(num_queries, embedding_dim)
 
-    def forward(self, input: Float[Tensor, " b 3 h w"]) -> Shaped[DetrOutputs, " b num_queries"]:
+    def forward(self, input: Float[Tensor, " b 3 h w"]) -> Shaped[DetrOutputs, " o b num_queries"]:
         b, _, h, w = input.shape
         img_tokens, pos_tokens = self.backbone(input)
 
@@ -35,7 +35,6 @@ class DETR(nn.Module):
 
         processed_queries = self.transformer_decoder(img_tokens, pos_tokens, query)
 
-        processed_queries = processed_queries[-1]
         outputs_class = self.class_embed(processed_queries)
         outputs_bbox = self.bbox_embed(processed_queries)  # cxcywh format and normalized by image size
         outputs_bbox = box_convert(outputs_bbox, "cxcywh", "xyxy")

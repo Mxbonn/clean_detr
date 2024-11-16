@@ -29,8 +29,24 @@ class DetrLoss(nn.Module):
         self.no_object_weight = no_object_weight
 
     def forward(
-        self, outputs: Shaped[DetrOutputs, " *b num_queries"], targets: list[Shaped[GTBoundingBoxes, ""]]
-    ) -> tuple[Float[Tensor, ""], dict]:
+        self, outputs: Shaped[DetrOutputs, " o b num_queries"], targets: list[GTBoundingBoxes]
+    ) -> tuple[Float[Tensor, " 1"], dict]:
+        loss_dict = {}
+        loss = None
+        for i, layerwise_output in enumerate(outputs):  # pyright: ignore [reportArgumentType]
+            _loss, _loss_dict = self.forward_single(layerwise_output, targets)
+            if loss is None:
+                loss = _loss
+            else:
+                loss += _loss
+            for key, value in _loss_dict.items():
+                loss_dict[f"layer_{i}/{key}"] = value
+        assert loss is not None
+        return loss, loss_dict
+
+    def forward_single(
+        self, outputs: Shaped[DetrOutputs, " b num_queries"], targets: list[GTBoundingBoxes]
+    ) -> tuple[Float[Tensor, " 1"], dict]:
         matches = self.matcher(outputs, targets)
 
         # Compute the average number of target centers, for normalization purposes
