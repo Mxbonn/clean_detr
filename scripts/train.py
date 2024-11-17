@@ -5,13 +5,15 @@ from datetime import datetime
 
 import hydra
 import torch
+import torch.distributed as dist
+import wandb
 from hydra.utils import get_method, instantiate
 from omegaconf import OmegaConf
-from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler, SequentialSampler
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data import BatchSampler, DataLoader, Dataset, DistributedSampler, RandomSampler, SequentialSampler
 from torchmetrics.aggregation import MeanMetric
 from tqdm import tqdm
 
-import wandb
 from detr.lr_scheduler import get_cosine_schedule_with_warmup
 
 logging.basicConfig(level=logging.INFO)
@@ -20,13 +22,19 @@ logger = logging.getLogger(__name__)
 
 @hydra.main(config_path="../configs", config_name="train", version_base="1.3")
 def main(cfg):
-    device = torch.device(cfg.device)
+    if dist.is_torchelastic_launched():
+        device = torch.device(f"cuda:{dist.get_rank()}")
+    else:
+        device = torch.device(cfg.device)
 
     model = instantiate(cfg.model)
     model = model.to(device)
     uncompiled_model = model  # needed for saving the model
     if cfg.compile_model:
         model = torch.compile(model)
+
+    if torch.distributed.is_torchelastic_launched():
+        model = DistributedDataParallel(model)
 
     loss = instantiate(cfg.loss)
 
@@ -44,8 +52,13 @@ def main(cfg):
     train_dataset: Dataset = instantiate(cfg.data.datasets.train)
     validation_dataset: Dataset = instantiate(cfg.data.datasets.validation)
 
-    train_sampler = RandomSampler(train_dataset)  # pyright: ignore
-    validation_sampler = SequentialSampler(validation_dataset)  # pyright: ignore
+    if dist.is_torchelastic_launched():
+        train_sampler = DistributedSampler(train_dataset)
+        validation_sampler = DistributedSampler(validation_dataset, shuffle=False)
+    else:
+        train_sampler = RandomSampler(train_dataset)  # pyright: ignore
+        validation_sampler = SequentialSampler(validation_dataset)  # pyright: ignore
+
     batch_train_sampler = BatchSampler(train_sampler, batch_size=cfg.batch_size, drop_last=True)
 
     train_collate = get_method(cfg.data.train_collate)
@@ -71,27 +84,35 @@ def main(cfg):
     assert isinstance(lr_scheduler, torch.optim.lr_scheduler.LRScheduler)
 
     # wandb stuff
-    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
-    assert isinstance(cfg_dict, dict)
-    run_name = f"{cfg.semantic_version}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    wandb.init(
-        project=cfg.wandb.project,
-        entity=cfg.wandb.entity,
-        name=run_name,
-        config=cfg_dict,
-    )
+    if not dist.is_torchelastic_launched() or dist.get_rank() == 0:
+        cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+        assert isinstance(cfg_dict, dict)
+        run_name = f"{cfg.semantic_version}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        wandb.init(
+            project=cfg.wandb.project,
+            entity=cfg.wandb.entity,
+            name=run_name,
+            config=cfg_dict,
+        )
 
     for epoch in tqdm(range(cfg.epochs), desc="Epochs"):
+        if isinstance(train_sampler, DistributedSampler):
+            train_sampler.set_epoch(epoch)
         train_epoch(model, loss, train_loader, optimizer, lr_scheduler, device, cfg)
         validate(model, loss, validation_loader, device)
-        with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as fp:
-            path = fp.name
-            torch.save(uncompiled_model.state_dict(), path)
-            checkpoint_name = f"model-{wandb.run.id}"  # pyright: ignore
-            artifact = wandb.Artifact(checkpoint_name, type="model")
-            artifact.add_file(path)
-            wandb.log_artifact(artifact)
-        wandb.log({"epoch": epoch})
+        if not dist.is_torchelastic_launched() or dist.get_rank() == 0:
+            if dist.is_torchelastic_launched():
+                dist.barrier()
+            with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as fp:
+                path = fp.name
+                torch.save(uncompiled_model.state_dict(), path)
+                checkpoint_name = f"model-{wandb.run.id}"  # pyright: ignore
+                artifact = wandb.Artifact(checkpoint_name, type="model")
+                artifact.add_file(path)
+                wandb.log_artifact(artifact)
+            if dist.is_torchelastic_launched():
+                dist.barrier()
+            wandb.log({"epoch": epoch})
 
 
 def train_epoch(model, loss_module, dataloader, optimizer, scheduler, device, cfg):
@@ -109,13 +130,14 @@ def train_epoch(model, loss_module, dataloader, optimizer, scheduler, device, cf
         loss, loss_dict = loss_module(outputs, targets)
 
         # wandb
-        if i % cfg.wandb.log_interval == 0:
-            lrs = scheduler.get_last_lr()
-            for idx, lr in enumerate(lrs):
-                wandb.log({f"lr/{idx}": lr}, commit=False)
-            for key, value in loss_dict.items():
-                wandb.log({f"train/loss/{key}": value}, commit=False)
-            wandb.log({"train/loss/weighted": loss.item()})
+        if not dist.is_torchelastic_launched() or dist.get_rank() == 0:
+            if i % cfg.wandb.log_interval == 0:
+                lrs = scheduler.get_last_lr()
+                for idx, lr in enumerate(lrs):
+                    wandb.log({f"lr/{idx}": lr}, commit=False)
+                for key, value in loss_dict.items():
+                    wandb.log({f"train/loss/{key}": value}, commit=False)
+                wandb.log({"train/loss/weighted": loss.item()})
 
         loss = loss / gradient_accumulation_steps
         loss.backward()
@@ -147,9 +169,10 @@ def validate(model, loss_module, dataloader, device):
         for key, value in loss_dict.items():
             mean_loss_metrics[key](value)
         mean_loss_metrics["weighted"](loss.item())
-    for key, metric in mean_loss_metrics.items():
-        mean_loss = metric.compute()
-        wandb.log({f"validation/loss/{key}": mean_loss}, commit=False)
+    if not dist.is_torchelastic_launched() or dist.get_rank() == 0:
+        for key, metric in mean_loss_metrics.items():
+            mean_loss = metric.compute()
+            wandb.log({f"validation/loss/{key}": mean_loss}, commit=False)
 
 
 if __name__ == "__main__":
