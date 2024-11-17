@@ -6,7 +6,6 @@ from datetime import datetime
 import hydra
 import torch
 import torch.distributed as dist
-import wandb
 from hydra.utils import get_method, instantiate
 from omegaconf import OmegaConf
 from torch.nn.parallel import DistributedDataParallel
@@ -14,6 +13,7 @@ from torch.utils.data import BatchSampler, DataLoader, Dataset, DistributedSampl
 from torchmetrics.aggregation import MeanMetric
 from tqdm import tqdm
 
+import wandb
 from detr.lr_scheduler import get_cosine_schedule_with_warmup
 
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 @hydra.main(config_path="../configs", config_name="train", version_base="1.3")
 def main(cfg):
     if dist.is_torchelastic_launched():
+        dist.init_process_group()
+
+    if dist.is_initialized():
         device = torch.device(f"cuda:{dist.get_rank()}")
     else:
         device = torch.device(cfg.device)
@@ -33,7 +36,7 @@ def main(cfg):
     if cfg.compile_model:
         model = torch.compile(model)
 
-    if torch.distributed.is_torchelastic_launched():
+    if torch.distributed.is_initialized():
         model = DistributedDataParallel(model)
 
     loss = instantiate(cfg.loss)
@@ -52,7 +55,7 @@ def main(cfg):
     train_dataset: Dataset = instantiate(cfg.data.datasets.train)
     validation_dataset: Dataset = instantiate(cfg.data.datasets.validation)
 
-    if dist.is_torchelastic_launched():
+    if dist.is_initialized():
         train_sampler = DistributedSampler(train_dataset)
         validation_sampler = DistributedSampler(validation_dataset, shuffle=False)
     else:
@@ -84,7 +87,7 @@ def main(cfg):
     assert isinstance(lr_scheduler, torch.optim.lr_scheduler.LRScheduler)
 
     # wandb stuff
-    if not dist.is_torchelastic_launched() or dist.get_rank() == 0:
+    if not dist.is_initialized() or dist.get_rank() == 0:
         cfg_dict = OmegaConf.to_container(cfg, resolve=True)
         assert isinstance(cfg_dict, dict)
         run_name = f"{cfg.semantic_version}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -95,13 +98,13 @@ def main(cfg):
             config=cfg_dict,
         )
 
-    for epoch in tqdm(range(cfg.epochs), desc="Epochs"):
+    for epoch in tqdm(range(cfg.epochs), desc="Epochs", disable=(dist.is_initialized() and dist.get_rank() != 0)):
         if isinstance(train_sampler, DistributedSampler):
             train_sampler.set_epoch(epoch)
         train_epoch(model, loss, train_loader, optimizer, lr_scheduler, device, cfg)
         validate(model, loss, validation_loader, device)
-        if not dist.is_torchelastic_launched() or dist.get_rank() == 0:
-            if dist.is_torchelastic_launched():
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            if dist.is_initialized():
                 dist.barrier()
             with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as fp:
                 path = fp.name
@@ -110,7 +113,7 @@ def main(cfg):
                 artifact = wandb.Artifact(checkpoint_name, type="model")
                 artifact.add_file(path)
                 wandb.log_artifact(artifact)
-            if dist.is_torchelastic_launched():
+            if dist.is_initialized():
                 dist.barrier()
             wandb.log({"epoch": epoch})
 
@@ -118,7 +121,12 @@ def main(cfg):
 def train_epoch(model, loss_module, dataloader, optimizer, scheduler, device, cfg):
     model.train()
     gradient_accumulation_steps = max(1, cfg.gradient_accumulation_steps)
-    for i, (inputs, targets) in tqdm(enumerate(dataloader), total=len(dataloader), leave=False):
+    for i, (inputs, targets) in tqdm(
+        enumerate(dataloader),
+        total=len(dataloader),
+        leave=False,
+        disable=(dist.is_initialized() and dist.get_rank() != 0),
+    ):
         inputs = inputs.to(device)
         if isinstance(targets, (list, tuple)):
             targets = [target.to(device) for target in targets]
@@ -130,7 +138,7 @@ def train_epoch(model, loss_module, dataloader, optimizer, scheduler, device, cf
         loss, loss_dict = loss_module(outputs, targets)
 
         # wandb
-        if not dist.is_torchelastic_launched() or dist.get_rank() == 0:
+        if not dist.is_initialized() or dist.get_rank() == 0:
             if i % cfg.wandb.log_interval == 0:
                 lrs = scheduler.get_last_lr()
                 for idx, lr in enumerate(lrs):
@@ -156,7 +164,7 @@ def train_epoch(model, loss_module, dataloader, optimizer, scheduler, device, cf
 def validate(model, loss_module, dataloader, device):
     model.eval()
     mean_loss_metrics = defaultdict(MeanMetric)
-    for inputs, targets in tqdm(dataloader, leave=False):
+    for inputs, targets in tqdm(dataloader, leave=False, disable=(dist.is_initialized() and dist.get_rank() != 0)):
         inputs = inputs.to(device)
         if isinstance(targets, (list, tuple)):
             targets = [target.to(device) for target in targets]
@@ -169,10 +177,14 @@ def validate(model, loss_module, dataloader, device):
         for key, value in loss_dict.items():
             mean_loss_metrics[key](value)
         mean_loss_metrics["weighted"](loss.item())
-    if not dist.is_torchelastic_launched() or dist.get_rank() == 0:
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        if dist.is_initialized():
+            dist.barrier()
         for key, metric in mean_loss_metrics.items():
             mean_loss = metric.compute()
             wandb.log({f"validation/loss/{key}": mean_loss}, commit=False)
+        if dist.is_initialized():
+            dist.barrier()
 
 
 if __name__ == "__main__":

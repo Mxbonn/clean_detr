@@ -6,7 +6,7 @@ lr_backbone: 1e-5
 weight_decay: 1e-4
 epochs: 10 
 batch_size: 4
-gradient_accumulation_steps: 16 # effective batch size = 64
+gradient_accumulation_steps: 8 # effective batch size should be 64 (batch_size * gradient_accumulation_steps * num_gpus)
 num_workers: 4
 clip_max_norm: 0.1
 compile_model: False
