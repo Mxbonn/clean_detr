@@ -30,11 +30,18 @@ class DetrLoss(nn.Module):
 
     def forward(
         self, outputs: Shaped[DetrOutputs, " o b num_queries"], targets: list[GTBoundingBoxes]
-    ) -> tuple[Float[Tensor, " 1"], dict]:
+    ) -> tuple[Float[Tensor, ""], dict]:
         loss_dict = {}
         loss = None
+        # Compute the average number of target centers, for normalization purposes
+        num_bboxes = sum(len(target.bboxes) for target in targets)  # type: ignore
+        num_bboxes = torch.as_tensor([num_bboxes], dtype=torch.float, device=targets[0].device)  # pyright: ignore[reportAttributeAccessIssue]
+        if torch.distributed.is_initialized():
+            torch.distributed.all_reduce(num_bboxes)
+            num_bboxes = num_bboxes / torch.distributed.get_world_size()
+        num_bboxes = torch.clamp(num_bboxes, min=1).item()
         for i, layerwise_output in enumerate(outputs):  # pyright: ignore [reportArgumentType]
-            _loss, _loss_dict = self.forward_single(layerwise_output, targets)
+            _loss, _loss_dict = self.forward_single(layerwise_output, targets, num_bboxes)
             if loss is None:
                 loss = _loss
             else:
@@ -45,13 +52,12 @@ class DetrLoss(nn.Module):
         return loss, loss_dict
 
     def forward_single(
-        self, outputs: Shaped[DetrOutputs, " b num_queries"], targets: list[GTBoundingBoxes]
-    ) -> tuple[Float[Tensor, " 1"], dict]:
+        self,
+        outputs: Shaped[DetrOutputs, " b num_queries"],
+        targets: list[GTBoundingBoxes],
+        num_bboxes: float,
+    ) -> tuple[Float[Tensor, ""], dict]:
         matches = self.matcher(outputs, targets)
-
-        # Compute the average number of target centers, for normalization purposes
-        num_bboxes = sum(len(target.bboxes) for target in targets)  # type: ignore
-        num_bboxes = torch.as_tensor([num_bboxes], dtype=torch.float, device=targets[0].device)  # pyright: ignore[reportAttributeAccessIssue]
 
         src_query_indices = get_src_indices(matches)
         target_query_indices = get_target_indices(matches)
