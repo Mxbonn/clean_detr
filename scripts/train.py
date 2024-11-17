@@ -126,28 +126,27 @@ def train_epoch(model, loss_module, dataloader, optimizer, scheduler, device, cf
             optimizer.step()
             optimizer.zero_grad()
         scheduler.step()
-    # step and zero_grad for the last batch in case it was not a multiple of gradient_accumulation_steps
-    optimizer.step()
+    # zero_grad for the last batch in case it was not a multiple of gradient_accumulation_steps
     optimizer.zero_grad()
 
 
+@torch.no_grad()
 def validate(model, loss_module, dataloader, device):
     model.eval()
     mean_loss_metrics = defaultdict(MeanMetric)
-    with torch.no_grad():
-        for inputs, targets in tqdm(dataloader, leave=False):
-            inputs = inputs.to(device)
-            if isinstance(targets, (list, tuple)):
-                targets = [target.to(device) for target in targets]
-            else:
-                targets = targets.to(device)
+    for inputs, targets in tqdm(dataloader, leave=False):
+        inputs = inputs.to(device)
+        if isinstance(targets, (list, tuple)):
+            targets = [target.to(device) for target in targets]
+        else:
+            targets = targets.to(device)
 
-            outputs = model(inputs)
+        outputs = model(inputs)
 
-            loss, loss_dict = loss_module(outputs, targets)
-            for key, value in loss_dict.items():
-                mean_loss_metrics[key](value)
-            mean_loss_metrics["weighted"](loss.item())
+        loss, loss_dict = loss_module(outputs, targets)
+        for key, value in loss_dict.items():
+            mean_loss_metrics[key](value)
+        mean_loss_metrics["weighted"](loss.item())
     for key, metric in mean_loss_metrics.items():
         mean_loss = metric.compute()
         wandb.log({f"validation/loss/{key}": mean_loss}, commit=False)

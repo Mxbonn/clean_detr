@@ -1,4 +1,4 @@
-semantic_version: 0.0.1
+semantic_version: 0.0.2
 
 device: cuda
 lr: 1e-4
@@ -13,7 +13,7 @@ compile_model: False
 
 model:
   _target_: detr.models.zoo.detr_resnet50
-  pretrained: True
+  pretrained: False
 
 loss:
   _target_: detr.loss.DetrLoss
