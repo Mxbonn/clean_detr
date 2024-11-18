@@ -103,9 +103,9 @@ def main(cfg):
             train_sampler.set_epoch(epoch)
         train_epoch(model, loss, train_loader, optimizer, lr_scheduler, device, cfg)
         validate(model, loss, validation_loader, device)
+        if dist.is_initialized():
+            dist.barrier()
         if not dist.is_initialized() or dist.get_rank() == 0:
-            if dist.is_initialized():
-                dist.barrier()
             with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as fp:
                 path = fp.name
                 torch.save(uncompiled_model.state_dict(), path)
@@ -113,8 +113,6 @@ def main(cfg):
                 artifact = wandb.Artifact(checkpoint_name, type="model")
                 artifact.add_file(path)
                 wandb.log_artifact(artifact)
-            if dist.is_initialized():
-                dist.barrier()
             wandb.log({"epoch": epoch})
 
 
@@ -175,16 +173,12 @@ def validate(model, loss_module, dataloader, device):
 
         loss, loss_dict = loss_module(outputs, targets)
         for key, value in loss_dict.items():
-            mean_loss_metrics[key](value)
-        mean_loss_metrics["weighted"](loss.item())
-    if not dist.is_initialized() or dist.get_rank() == 0:
-        if dist.is_initialized():
-            dist.barrier()
-        for key, metric in mean_loss_metrics.items():
-            mean_loss = metric.compute()
+            mean_loss_metrics[key].update(value)
+        mean_loss_metrics["weighted"].update(loss.item())
+    for key, metric in mean_loss_metrics.items():
+        mean_loss = metric.compute()
+        if not dist.is_initialized() or dist.get_rank() == 0:
             wandb.log({f"validation/loss/{key}": mean_loss}, commit=False)
-        if dist.is_initialized():
-            dist.barrier()
 
 
 if __name__ == "__main__":
